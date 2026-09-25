@@ -1,4 +1,23 @@
-import { TABLES } from "./schema";
+import { TABLES, type TableName } from "./schema";
+
+/**
+ * Constructs the stream rather than checking the class exists: a runtime can
+ * expose DecompressionStream and still reject 'gzip', and gzip specifically is
+ * what every shipped log object is encoded with.
+ */
+export function detectGzipSupport(): boolean {
+  try {
+    new DecompressionStream("gzip");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Single source of truth: the handler skips DB work on exactly this test. */
+export function hasDatabaseBinding(env: Record<string, unknown> | undefined): boolean {
+  return Boolean(env?.["DB"]);
+}
 
 export interface RuntimeFacts {
   env: Record<string, unknown> | undefined;
@@ -10,8 +29,8 @@ export interface Readout {
   envKeys: string[];
   hasDatabase: boolean;
   hasGzipStream: boolean;
-  tablesPresent: string[];
-  tablesMissing: string[];
+  tablesPresent: TableName[];
+  tablesMissing: TableName[];
   schemaComplete: boolean;
 }
 
@@ -24,7 +43,7 @@ export function buildReadout({ env, hasGzip, tablesPresent }: RuntimeFacts): Rea
 
   return {
     envKeys,
-    hasDatabase: Boolean(env && "DB" in env),
+    hasDatabase: hasDatabaseBinding(env),
     hasGzipStream: hasGzip,
     tablesPresent: [...present],
     tablesMissing: [...missing],

@@ -1,4 +1,4 @@
-import { buildReadout } from "./src/probe";
+import { buildReadout, detectGzipSupport, hasDatabaseBinding } from "./src/probe";
 import { ddlStatements } from "./src/schema";
 
 interface PreparedStatement {
@@ -49,16 +49,18 @@ export default {
 
     // Decides whether the sync job can use the platform gunzip or needs a JS
     // fallback. Issue #1 exists largely to answer this.
-    const hasGzip = typeof DecompressionStream !== "undefined";
+    const hasGzip = detectGzipSupport();
 
     let tablesPresent: string[] = [];
 
-    if (env?.DB) {
+    if (hasDatabaseBinding(env) && env.DB) {
       diagnostics.databaseSurface = surfaceOf(env.DB);
 
       try {
         for (const statement of ddlStatements()) {
-          await env.DB.prepare(statement).all();
+          // DDL is not a SELECT; D1-shaped bindings expect run() for those.
+          const prepared = env.DB.prepare(statement);
+          await (prepared.run ? prepared.run() : prepared.all());
         }
         diagnostics.ddlApplied = true;
       } catch (error) {

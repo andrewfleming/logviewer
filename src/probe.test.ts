@@ -1,7 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { buildReadout } from "./probe";
+import { buildReadout, detectGzipSupport, hasDatabaseBinding } from "./probe";
 
 const SECRET = "sv=2021-08-06&sig=THIS_MUST_NEVER_APPEAR";
+
+describe("gzip detection", () => {
+  it("answers whether gzip specifically works, not whether the class exists", () => {
+    // A runtime can expose DecompressionStream and still reject 'gzip'.
+    // Every shipped log object is gzipped, so the format is the question.
+    expect(detectGzipSupport()).toBe(true);
+  });
+
+  it("reports false rather than throwing when the format is unsupported", () => {
+    const original = globalThis.DecompressionStream;
+    // @ts-expect-error -- deliberately simulating a runtime that rejects gzip
+    globalThis.DecompressionStream = class {
+      constructor() {
+        throw new TypeError("Unsupported compression format");
+      }
+    };
+
+    try {
+      expect(detectGzipSupport()).toBe(false);
+    } finally {
+      globalThis.DecompressionStream = original;
+    }
+  });
+});
 
 describe("runtime readout", () => {
   it("never serialises an environment variable's value", () => {
@@ -60,6 +84,16 @@ describe("runtime readout", () => {
 
     expect(readout.schemaComplete).toBe(true);
     expect(readout.tablesMissing).toEqual([]);
+  });
+
+  it("does not claim a binding the handler would decline to use", () => {
+    // The handler skips all DB work when DB is absent or undefined. If the
+    // readout disagreed, it would report a capability that same request
+    // just refused to exercise.
+    expect(hasDatabaseBinding({ DB: undefined })).toBe(false);
+    expect(buildReadout({ env: { DB: undefined }, hasGzip: true, tablesPresent: [] }).hasDatabase).toBe(
+      false,
+    );
   });
 
   it("tolerates a runtime that provides no env object at all", () => {
