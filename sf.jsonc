@@ -1,0 +1,14 @@
+{
+  "$schema": "https://spacefast.com/schemas/sf.json",
+  "runtime": {
+    "kind": "functions",
+    // Named explicitly: per the schema, an entry that does not resolve is a
+    // hard error rather than a silent fall back to a static publish.
+    "entry": "handler.ts",
+    // Binds env.DB. Declared, never detected — a worker reaches nothing until
+    // it says so. Schema management is the handler's job; `sf db migrate` is
+    // Zero-only.
+    "database": true,
+    "compatibilityDate": "2026-07-01"
+  }
+}

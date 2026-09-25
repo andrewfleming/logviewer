@@ -1,0 +1,30 @@
+{
+  "name": "wpvip-logviewer",
+  "version": "0.1.0",
+  "description": "Self-serve viewer for WPVIP shipped logs",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewfleming/logviewer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/andrewfleming/logviewer/issues"
+  },
+  "homepage": "https://github.com/andrewfleming/logviewer#readme",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

@@ -41,19 +41,22 @@ Spacefast is the hosting target. It is **not** just static hosting — it offers
 
 ### Functions runtime facts
 
-- Declare in `sf.jsonc`:
+- Declare in `sf.jsonc`. **Corrected against the published schema** at https://spacefast.com/schemas/sf.json during issue #1 — the block originally recorded here was wrong:
   ```jsonc
   {
     "$schema": "https://spacefast.com/schemas/sf.json",
     "runtime": {
       "kind": "functions",
+      "entry": "handler.ts",
       "database": true,
-      "fetch": true,
       "compatibilityDate": "2026-07-01"
     }
   }
   ```
-- `fetch: true` is required — without it, `fetch()` inside the worker is refused. There is no schema default for hand-written handlers/routers (only an OpenNext build gets it by default).
+- The Functions variant accepts exactly four keys: `kind` (required, const `"functions"`), `entry`, `database`, `compatibilityDate`.
+- **There is no `fetch` key.** The earlier claim that `"fetch": true` is required for outbound fetch was wrong; outbound fetch is not a declared capability in the schema. Publishing with it produced `config_invalid — Unknown runtime key "fetch" was ignored`.
+- `entry` names the worker entry module relative to the published directory. It is auto-detected when absent, but naming it explicitly is worth doing: per the schema, an entry that does not resolve is a hard error rather than a silent fall back to a static publish.
+- `database: true` gives the worker `env.DB`, a D1-shaped binding. The schema notes it is *declared, never detected* — a worker reaches nothing until it says so.
 - `database: true` adds `env.DB`, a D1-shaped binding (`env.DB.prepare(sql).bind(...).all()`) over the Space's own MySQL. No connection string is ever exposed; there's no DSN anywhere.
 - File router: `functions/<path>.ts` exports `GET`/`POST`/etc.; `functions/index.ts` → `/`; `functions/api/sync.ts` → `/api/sync`; etc. A single `handler.ts` at the root is also valid (whole-site catch-all) but the file-router shape is cleaner for this project (separate sync endpoint, query endpoint, dashboard).
 - `context.env` inside a route handler carries the Space's environment variables (see next section). `context.params` carries route params.
@@ -220,20 +223,43 @@ Customer traffic ranges from near-zero to tens of millions of log lines a day, o
 - **If row-level drill-down is wanted later** (not MVP): scope it to a short rolling window (e.g. last 24h) in a separate table, pruned by its own hourly cron. At "tens of millions/day," even a 24h raw window could itself be tens of millions of rows — this is the one place aggregation doesn't help, and the part most worth confirming against Spacefast's actual (undocumented) database limits before promising it to the largest customers. Post-MVP.
 - **Cron mechanics already support high-volume ingestion** without extra design work: the skip-not-queue overlap policy means a slow catch-up run on a busy day just delays the next fire rather than piling up concurrent runs against the same MySQL.
 
+## BLOCKER: Functions is not provisioned for the `vip-accounts` team
+
+Found while doing issue #1. The whole MVP architecture rests on the Functions runtime, and it does not currently run on this team.
+
+Evidence, from publishing to the real space (`wpvip-logviewer`, team `vip-accounts`):
+
+| Published config | `x-spacefast-runtime` header | Result |
+| --- | --- | --- |
+| No `runtime` block (static control) | absent | A test file serves `200`. Edge, access session and static serving all fine. |
+| `runtime.kind = "functions"` | `1` | **Every path returns a plain-text `404`**, including paths backed by uploaded files. Handler code never executes; `sf logs runtime` stays empty across three published versions. |
+
+The worker bundle itself compiles correctly — the generated `__spacefast/functions/bundles/*/bundle.json` contains the handler and both of its modules. So this is not a build or code problem; a valid worker is produced and then never executed.
+
+Alongside that, every Functions publish carried `config_invalid — Unknown runtime key "database" was ignored`, even though `database` **is** a valid key in the published schema. The server is therefore behind the published schema on Functions support, which lines up with the CLI's own bundled description: *"Private beta — the team needs the flag."*
+
+The failure mode is worth flagging on its own: declaring a Functions runtime without the flag does not error. It publishes "successfully", reports `status=ready`, engages a worker slot, and then 404s the entire space — taking the static files down with it. The only surfaced signal is a `warning`-severity diagnostic about an unrelated key.
+
+**Next step is not a code change.** Ask Spacefast to enable the Functions private beta for `vip-accounts`, then re-publish and re-run issue #1's criteria. Until then #1 cannot close, and #2–#6 are all downstream of it.
+
+If the flag can't be obtained, the fallback is the **Zero** runtime, which the original scoping considered and rejected as a less direct fit rather than as unworkable — that rejection would need revisiting, and it would reshape most of the data-flow design.
+
 ## Open questions
 
 Resolved since the original handoff:
 
 - ~~Do the cloud-provider SDKs run in this runtime?~~ **Sidestepped for MVP** by going Azure-only (SAS bearer token, no SDK, no signing). Returns as a live question when S3 is added.
 - ~~What are the actual log line field shapes?~~ **Confirmed** — see "Log line parsing rules" above.
+- ~~What is the correct `sf.jsonc` runtime block?~~ **Confirmed against the published schema** — see "Functions runtime facts". There is no `fetch` key.
 
 Still open:
 
+0. **Does `DecompressionStream('gzip')` exist in this runtime?** Issue #1 was supposed to answer this and **could not** — no worker code executes while Functions is unprovisioned. This stays unknown, and #3 depends on it. The probe that answers it is written and deployed; it just needs a runtime that runs it.
+
 1. Is there a real (if undocumented) row-count or storage-size ceiling on the per-Space MySQL? Worth asking Spacefast directly rather than discovering it under a large customer's load.
 2. Does the Space's 100 GiB/day bandwidth limit (documented as a general per-Space limit) apply to the worker's *outbound* fetches to the customer's bucket, or only to traffic the Space serves to visitors? Matters for how many buckets/customers one Space could realistically sync from, if a shared multi-tenant deployment is ever considered instead of one Space per customer.
-3. Does `DecompressionStream('gzip')` work as expected in this runtime, or does gunzip need a JS library fallback (e.g. `pako`)? Low risk, known fallback.
-4. Are origin logs newline-delimited JSON? Undocumented. Mitigated by the tolerant parser rather than blocked on.
-5. Does `traffic_operators` exist as a real field? Not in the docs. Confirm against a live sample.
+3. Are origin logs newline-delimited JSON? Undocumented. Mitigated by the tolerant parser rather than blocked on.
+4. Does `traffic_operators` exist as a real field? Not in the docs. Confirm against a live sample.
 
 ## Reference links
 
