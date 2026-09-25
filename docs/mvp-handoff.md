@@ -53,10 +53,20 @@ Spacefast is the hosting target. It is **not** just static hosting — it offers
     }
   }
   ```
-- The Functions variant accepts exactly four keys: `kind` (required, const `"functions"`), `entry`, `database`, `compatibilityDate`.
-- **There is no `fetch` key.** The earlier claim that `"fetch": true` is required for outbound fetch was wrong; outbound fetch is not a declared capability in the schema. Publishing with it produced `config_invalid — Unknown runtime key "fetch" was ignored`.
-- `entry` names the worker entry module relative to the published directory. It is auto-detected when absent, but naming it explicitly is worth doing: per the schema, an entry that does not resolve is a hard error rather than a silent fall back to a static publish.
-- `database: true` gives the worker `env.DB`, a D1-shaped binding. The schema notes it is *declared, never detected* — a worker reaches nothing until it says so.
+- Documented keys are `kind` (required), `entry`, `database`, `fetch`, `compatibilityDate`.
+- **`fetch: true` is real and the original handoff was right about it.** An intermediate correction in this repo claimed there was no `fetch` key, based on the published JSON schema, which omits it. The live docs document it: *"Allows outbound HTTP from the worker… A hand-written handler and a `functions/` router reach nothing until you declare it."* It has no schema default; only an OpenNext build gets it implicitly. Issue #2 needs it.
+- **Three sources disagree about this config, so trust the docs and verify by publishing.** The published JSON schema omits `fetch`; the deployed server rejects *both* `fetch` and `database` as `Unknown runtime key`; the docs document both. The server is behind the docs.
+- `entry` names the worker entry module relative to the published directory. Auto-detected when absent, but worth naming: an entry that does not resolve fails the publish rather than silently falling back to a static publish.
+- `database: true` gives the worker `env.DB`, D1-shaped — `env.DB.prepare(sql).bind(...).all()`, reaching the space's database through a broker so no connection string lands in the bundle. Capabilities are declared, never detected.
+
+### Other runtime facts confirmed from the docs
+
+- **`sf dev` does not run a worker.** It refuses `runtime.kind: "functions"` with `runtime_dev_unsupported` and exit code 2. There is no local runtime; every change is verified by publishing. This shapes how #2–#6 get tested.
+- **Detection order**: `.open-next/worker.js`, then a root `handler.ts`/`.js`/`.mjs` (claims the whole site), then `functions/` with at least one route module (claims exactly the routes its files declare). Anything else is a static site.
+- In a `functions/` router, `*.test.*` and `*.spec.*` files and anything starting with `_` or `.` are never routed — so colocated tests are safe.
+- **A path in no file's route table is a plain 404 and the worker never wakes.** A path that exists at other methods answers 405 with an `Allow` header.
+- `env` withholds two groups of names outright, dropped rather than blanked: database URL/DSN names, and anything starting with `SPACEFAST_` or `ZERO_`. Don't name a variable with those prefixes.
+- Limits: compiled bundle 8 MiB; 256 routes per version.
 - `database: true` adds `env.DB`, a D1-shaped binding (`env.DB.prepare(sql).bind(...).all()`) over the Space's own MySQL. No connection string is ever exposed; there's no DSN anywhere.
 - File router: `functions/<path>.ts` exports `GET`/`POST`/etc.; `functions/index.ts` → `/`; `functions/api/sync.ts` → `/api/sync`; etc. A single `handler.ts` at the root is also valid (whole-site catch-all) but the file-router shape is cleaner for this project (separate sync endpoint, query endpoint, dashboard).
 - `context.env` inside a route handler carries the Space's environment variables (see next section). `context.params` carries route params.
@@ -223,26 +233,33 @@ Customer traffic ranges from near-zero to tens of millions of log lines a day, o
 - **If row-level drill-down is wanted later** (not MVP): scope it to a short rolling window (e.g. last 24h) in a separate table, pruned by its own hourly cron. At "tens of millions/day," even a 24h raw window could itself be tens of millions of rows — this is the one place aggregation doesn't help, and the part most worth confirming against Spacefast's actual (undocumented) database limits before promising it to the largest customers. Post-MVP.
 - **Cron mechanics already support high-volume ingestion** without extra design work: the skip-not-queue overlap policy means a slow catch-up run on a busy day just delays the next fire rather than piling up concurrent runs against the same MySQL.
 
-## BLOCKER: Functions is not provisioned for the `vip-accounts` team
+## BLOCKER: Functions does not execute on the `vip-accounts` account
 
-Found while doing issue #1. The whole MVP architecture rests on the Functions runtime, and it does not currently run on this team.
+Found while doing issue #1. The whole MVP architecture rests on the Functions runtime, and it does not run on this account.
 
-Evidence, from publishing to the real space (`wpvip-logviewer`, team `vip-accounts`):
+**The decisive test**: `sf init --runtime functions` generates an official scaffold whose handler answers `/api/hello` with JSON. Published untouched to this team, with the canonical minimal config (`kind` + `entry`, no capabilities declared), **`/api/hello` returns `404`**. The scaffold's own 404 branch returns the body `Not found`; what comes back is `Not Found`. Different string, so the scaffold's handler is not the thing answering — a generic platform 404 is, and the worker never runs.
+
+Spacefast's own starter does not work on this account. That rules out our code, our config, our layout and our bundler completely. Reproduction space: `sf-canon-probe` (team `vip-accounts`), which is nothing but unmodified `sf init` output.
+
+Note the docs state plainly that **"Functions is on for every account."** The CLI's bundled offline docs (v0.0.23) instead say *"Private beta — the team needs the flag"*, which is what first suggested an entitlement problem. The bundled docs are stale; the discrepancy is worth raising with Spacefast alongside the reproduction, since the deployed server also rejects the documented `database` and `fetch` keys as unknown.
+
+Supporting evidence from our own space (`wpvip-logviewer`, team `vip-accounts`):
 
 | Published config | `x-spacefast-runtime` header | Result |
 | --- | --- | --- |
 | No `runtime` block (static control) | absent | A test file serves `200`. Edge, access session and static serving all fine. |
-| `runtime.kind = "functions"` | `1` | **Every path returns a plain-text `404`**, including paths backed by uploaded files. Handler code never executes; `sf logs runtime` stays empty across three published versions. |
+| `runtime.kind = "functions"`, root `handler.ts` | `1` | **Every path returns a plain-text `404`**, including paths backed by uploaded files. `sf logs runtime` stays empty across every published version. |
+| `runtime.kind = "functions"`, `functions/index.ts` router | `1` | Same `404`. The route module has **zero imports**, so nothing about our module graph is involved. |
 
 The worker bundle itself compiles correctly — the generated `__spacefast/functions/bundles/*/bundle.json` contains the handler and both of its modules. So this is not a build or code problem; a valid worker is produced and then never executed.
 
-Alongside that, every Functions publish carried `config_invalid — Unknown runtime key "database" was ignored`, even though `database` **is** a valid key in the published schema. The server is therefore behind the published schema on Functions support, which lines up with the CLI's own bundled description: *"Private beta — the team needs the flag."*
+Alongside that, every Functions publish carried `config_invalid — Unknown runtime key "database" was ignored` and the same for `fetch`, even though both are documented keys. The deployed server is behind its own documentation.
 
-The failure mode is worth flagging on its own: declaring a Functions runtime without the flag does not error. It publishes "successfully", reports `status=ready`, engages a worker slot, and then 404s the entire space — taking the static files down with it. The only surfaced signal is a `warning`-severity diagnostic about an unrelated key.
+The failure mode is worth flagging on its own: none of this errors. The publish reports success and `status=ready`; the version metadata reports `runtimeCodeDetected=true`, `failedStage=null`, `failureCode=null`, `failureMessage=null`, `buildLog=null`. The platform reports complete health while serving nothing, and declaring the runtime 404s the **entire space**, taking the static files down with it. The only surfaced signal is a `warning`-severity diagnostic about an unrelated key.
 
-**Next step is not a code change.** Ask Spacefast to enable the Functions private beta for `vip-accounts`, then re-publish and re-run issue #1's criteria. Until then #1 cannot close, and #2–#6 are all downstream of it.
+**Next step is not a code change.** Open a Spacefast support ticket, leading with the `sf-canon-probe` reproduction: *their own `sf init --runtime functions` output 404s on this account.* That is a much shorter conversation than anything about our code. Until it is resolved #1 cannot close, and #2–#6 are all downstream of it.
 
-If the flag can't be obtained, the fallback is the **Zero** runtime, which the original scoping considered and rejected as a less direct fit rather than as unworkable — that rejection would need revisiting, and it would reshape most of the data-flow design.
+If Functions cannot be made to run, the fallback is the **Zero** runtime, which the original scoping considered and rejected as a less direct fit rather than as unworkable — that rejection would need revisiting, and it would reshape most of the data-flow design. Note Zero is the runtime the platform pairs with a database and live browser queries, so the dashboard half of this project may actually suit it better than the sync half does.
 
 ## Open questions
 

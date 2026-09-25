@@ -2,13 +2,22 @@
   "$schema": "https://spacefast.com/schemas/sf.json",
   "runtime": {
     "kind": "functions",
-    // Named explicitly: per the schema, an entry that does not resolve is a
-    // hard error rather than a silent fall back to a static publish.
+    // Named explicitly: an entry that does not resolve fails the publish
+    // rather than silently falling back to a static publish.
     "entry": "handler.ts",
-    // Binds env.DB. Declared, never detected — a worker reaches nothing until
-    // it says so. Schema management is the handler's job; `sf db migrate` is
-    // Zero-only.
+    // Binds env.DB (D1-shaped). Declared, never detected. Schema management is
+    // the handler's job; `sf db migrate` is Zero-only.
     "database": true,
+    // Required for outbound fetch to a customer's blob container (issue #2).
+    // A hand-written handler reaches nothing until this is declared, and there
+    // is no schema default for one.
+    //
+    // NOTE: the deployed server currently rejects both `database` and `fetch`
+    // as `Unknown runtime key`, and the published JSON schema omits `fetch`
+    // entirely — but the docs document both. Kept because it states the
+    // capability this worker actually needs. See the BLOCKER section in
+    // docs/mvp-handoff.md.
+    "fetch": true,
     "compatibilityDate": "2026-07-01"
   }
 }
